@@ -2,7 +2,7 @@
 
 # 🐧 Linux Cheat Sheet — шпаргалка по командам Linux
 
-**Самая удобная шпаргалка по Linux и Bash на русском:** теория простым языком (как устроены файлы, процессы, права, память, загрузка и сеть), команды терминала, права доступа, процессы, сеть, SSH, systemd, grep/sed/awk, Vim и готовые однострочники — с примерами. А для тех, кто идёт дальше, — продвинутый уровень: Bash для профи, LVM и RAID, трассировка и производительность, ядро, безопасность, контейнеры, восстановление системы и вопросы с собеседований.
+**Самая удобная шпаргалка по Linux и Bash на русском:** теория простым языком (как устроены файлы, процессы, права, память, загрузка и сеть), команды терминала, права доступа, процессы, сеть, SSH, systemd, grep/sed/awk, Vim и готовые однострочники — с примерами. А для тех, кто идёт дальше, — продвинутый уровень: Bash для профи, LVM и RAID, трассировка и производительность, ядро, безопасность, контейнеры, восстановление системы и вопросы с собеседований. И практикум: 8 пошаговых сценариев из реальной работы и 28 задач с решениями на учебном полигоне.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](#-как-помочь-проекту)
 ![Language](https://img.shields.io/badge/язык-русский-blue)
@@ -76,7 +76,9 @@
 35. [🎯 Вопросы с собеседований](#-35-вопросы-с-собеседований)
 36. [Диагностика: что делать, если…](#-36-диагностика-что-делать-если)
 37. [Опасные команды](#️-37-опасные-команды-)
-38. [Глоссарий](#-глоссарий)
+38. [🧰 Практические сценарии: пошаговые рецепты](#-38-практические-сценарии-пошаговые-рецепты)
+39. [🎓 Практикум: задачи с решениями](#-39-практикум-задачи-с-решениями)
+40. [Глоссарий](#-глоссарий)
 
 ---
 
@@ -1816,7 +1818,7 @@ getpcaps PID                                             # возможност�
 ### SSH-сервер: базовая защита
 
 ```bash
-# /etc/ssh/sshd_config.d/99-hardening.conf
+# /etc/ssh/sshd_config.d/00-hardening.conf
 PermitRootLogin no
 PasswordAuthentication no
 KbdInteractiveAuthentication no
@@ -1828,6 +1830,8 @@ AllowUsers deploy admin
 ```bash
 sudo sshd -t && sudo systemctl reload ssh      # проверить конфиг, затем применить (в RHEL служба — sshd)
 ```
+
+> 💡 Имя начинается с `00-`, потому что sshd берёт **первое** найденное значение параметра, а в облачных образах Ubuntu уже есть `50-cloud-init.conf` с `PasswordAuthentication yes`. Итоговые настройки: `sudo sshd -T`.
 
 > 🔴 Не закрывай текущую SSH-сессию, пока не проверишь вход **в новом окне** — иначе можно остаться без доступа.
 
@@ -2239,6 +2243,602 @@ ps -o ppid= -p PID                    # родитель (для зомби)
 | `> /etc/passwd` | Обнулит файл пользователей |
 
 > 💡 Перед опасной операцией: сделай бэкап, проверь путь через `ls`, используй `rm -i` и `set -u` в скриптах.
+
+---
+
+## 🧰 38. Практические сценарии: пошаговые рецепты
+
+Готовые последовательности команд для задач, которые встречаются в реальной работе. Копируй по шагам и читай комментарии — так команды из разделов выше складываются в понимание.
+
+### Сценарий 1. Новый сервер Ubuntu за 10 минут
+
+```bash
+# 1. Обновить систему
+sudo apt update && sudo apt full-upgrade -y
+
+# 2. Создать пользователя с правами sudo
+sudo adduser deploy
+sudo usermod -aG sudo deploy
+
+# 3. Скопировать SSH-ключ (выполнить на СВОЁМ компьютере) и проверить вход
+ssh-copy-id deploy@SERVER_IP
+ssh deploy@SERVER_IP
+
+# 4. Запретить вход root и по паролю — только ПОСЛЕ успешного входа по ключу!
+sudo tee /etc/ssh/sshd_config.d/00-hardening.conf <<'EOF'
+PermitRootLogin no
+PasswordAuthentication no
+EOF
+sudo sshd -t && sudo systemctl reload ssh
+
+# 5. Файрвол: сначала SSH, потом включение
+sudo ufw allow OpenSSH
+sudo ufw enable
+
+# 6. Защита от перебора паролей и автообновления безопасности
+sudo apt install -y fail2ban unattended-upgrades
+sudo dpkg-reconfigure -plow unattended-upgrades
+
+# 7. Часовой пояс и имя хоста
+sudo timedatectl set-timezone Europe/Moscow
+sudo hostnamectl set-hostname web-01
+```
+
+> 💡 Файл называется `00-hardening.conf` не случайно: sshd берёт **первое** найденное значение параметра, а в облачных образах Ubuntu уже лежит `50-cloud-init.conf` с `PasswordAuthentication yes`. Проверить итоговые настройки: `sudo sshd -T | grep -Ei 'permitroot|passwordauth'`.
+
+### Сценарий 2. Сайт на nginx с бесплатным HTTPS
+
+Перед началом A-запись домена в DNS должна указывать на IP сервера.
+
+```bash
+sudo apt install -y nginx
+sudo mkdir -p /var/www/example.com
+echo '<h1>Работает!</h1>' | sudo tee /var/www/example.com/index.html
+
+sudo tee /etc/nginx/sites-available/example.com <<'EOF'
+server {
+    listen 80;
+    server_name example.com www.example.com;
+    root /var/www/example.com;
+    index index.html;
+    location / { try_files $uri $uri/ =404; }
+}
+EOF
+
+sudo ln -s /etc/nginx/sites-available/example.com /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx     # всегда проверяй конфиг перед reload
+sudo ufw allow 'Nginx Full'                     # порты 80 и 443
+
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d example.com -d www.example.com   # получит сертификат и настроит редирект на HTTPS
+sudo certbot renew --dry-run                    # проверить автопродление
+```
+
+### Сценарий 3. Бэкап с ротацией и проверкой
+
+`/usr/local/bin/backup.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+SRC=/var/www          # что бэкапим
+DST=/backup           # куда
+KEEP=7                # сколько последних архивов хранить
+
+mkdir -p "$DST"
+file="$DST/www-$(date +%F_%H%M).tar.gz"
+
+tar -czf "$file" -C "$(dirname "$SRC")" "$(basename "$SRC")"
+tar -tzf "$file" > /dev/null                     # архив читается целиком?
+
+ls -1t "$DST"/www-*.tar.gz | tail -n +$((KEEP + 1)) | xargs -r rm --   # удалить старые
+echo "OK: $file ($(du -h "$file" | cut -f1))"
+```
+
+```bash
+sudo chmod 700 /usr/local/bin/backup.sh
+sudo /usr/local/bin/backup.sh                    # проверить вручную
+# базы данных — отдельным дампом, а не копией файлов:
+pg_dump -Fc mydb > /backup/mydb-$(date +%F).dump                  # PostgreSQL
+mysqldump --single-transaction mydb | gzip > /backup/mydb-$(date +%F).sql.gz   # MySQL / MariaDB
+# копия вне сервера (правило 3-2-1):
+rsync -az /backup/ backup@remote:/srv/backups/web-01/
+```
+
+Запуск по расписанию — через таймер systemd (раздел 30) или cron: `0 3 * * * /usr/local/bin/backup.sh >> /var/log/backup.log 2>&1`.
+
+### Сценарий 4. Разбор логов nginx: кто, что и с какой ошибкой
+
+Формат `combined`: `$1` — IP, `$4` — время, `$7` — URL, `$9` — код ответа, `$10` — размер.
+
+```bash
+LOG=/var/log/nginx/access.log
+
+awk '{print $1}' "$LOG" | sort | uniq -c | sort -rn | head          # топ IP
+awk '{print $9}' "$LOG" | sort | uniq -c | sort -rn                 # сколько каких кодов
+awk '$9 >= 500 {print $7}' "$LOG" | sort | uniq -c | sort -rn | head   # URL с ошибками 5xx
+awk '{print $7}' "$LOG" | sort | uniq -c | sort -rn | head          # популярные страницы
+awk -F'"' '{print $6}' "$LOG" | sort | uniq -c | sort -rn | head    # топ User-Agent (боты видно сразу)
+awk '{print substr($4, 2, 17)}' "$LOG" | uniq -c | tail             # запросов в минуту
+awk '{s += $10} END {printf "%.1f MB\n", s/1024/1024}' "$LOG"       # отданный трафик
+zcat -f "$LOG"* | awk '$9 == 404' | wc -l                           # 404 с учётом старых .gz-логов
+tail -f "$LOG" | grep --line-buffered '" 5[0-9][0-9] '              # следить за 5xx в реальном времени
+```
+
+### Сценарий 5. Подключить новый диск навсегда
+
+```bash
+lsblk                                                    # найти новый диск, например /dev/sdb
+sudo parted /dev/sdb --script mklabel gpt mkpart primary ext4 0% 100%   # 🔴 проверь букву диска!
+sudo mkfs.ext4 -L data /dev/sdb1
+sudo mkdir -p /data
+echo "UUID=$(sudo blkid -s UUID -o value /dev/sdb1) /data ext4 defaults,nofail 0 2" | sudo tee -a /etc/fstab
+sudo systemctl daemon-reload
+sudo mount -a && df -h /data                             # ошибок нет — можно перезагружаться
+```
+
+### Сценарий 6. Переезд данных на новый сервер
+
+```bash
+# 1. Первый проход — пока всё работает (можно гонять сколько угодно раз)
+rsync -aHAX --numeric-ids --info=progress2 /var/www/ root@new:/var/www/
+
+# 2. Посмотреть, что изменится, не копируя
+rsync -aHAX --numeric-ids --delete --dry-run /var/www/ root@new:/var/www/
+
+# 3. Окно переключения: остановить запись и быстро догнать разницу
+sudo systemctl stop myapp
+rsync -aHAX --numeric-ids --delete /var/www/ root@new:/var/www/
+# 4. Переключить DNS / IP на новый сервер
+```
+
+> 💡 За сутки до переезда уменьши TTL DNS-записи до 300 секунд — переключение разойдётся за минуты, а не за часы.
+
+### Сценарий 7. Уведомления в Telegram из скриптов
+
+Создай бота у @BotFather, узнай свой `chat_id`, сохрани их в `/etc/default/notify` (права `600`):
+
+```bash
+# /etc/default/notify
+TG_TOKEN=123456:ABC...
+TG_CHAT_ID=123456789
+```
+
+```bash
+#!/usr/bin/env bash
+# /usr/local/bin/healthcheck.sh — запускать по таймеру каждые 5 минут
+source /etc/default/notify
+
+notify() {
+  curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+       -d chat_id="${TG_CHAT_ID}" --data-urlencode text="$1" > /dev/null
+}
+
+systemctl is-active --quiet nginx || notify "🔥 $(hostname): nginx не работает"
+use=$(df --output=pcent / | tail -1 | tr -dc '0-9')
+(( use > 85 )) && notify "💾 $(hostname): диск / заполнен на $use%"
+load=$(cut -d' ' -f1 /proc/loadavg)
+awk -v l="$load" -v n="$(nproc)" 'BEGIN {exit !(l > n * 2)}' && notify "🔥 $(hostname): load average $load"
+exit 0
+```
+
+### Сценарий 8. Ротация логов своего приложения
+
+`/etc/logrotate.d/myapp`:
+
+```
+/var/log/myapp/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
+```
+
+```bash
+sudo logrotate -d /etc/logrotate.d/myapp    # пробный прогон: что будет сделано
+sudo logrotate -f /etc/logrotate.d/myapp    # выполнить принудительно
+```
+
+`copytruncate` нужен, если приложение не умеет переоткрывать лог по сигналу; иначе используй `postrotate` с `systemctl reload myapp`.
+
+---
+
+## 🎓 39. Практикум: задачи с решениями
+
+Лучший способ запомнить команды — решать задачи. Сначала подготовь учебный полигон, потом решай сам и только после этого открывай решение.
+
+### Подготовка полигона
+
+Скрипт создаёт в `~/lab` файлы, лог веб-сервера, CSV и конфиг. Ничего вне этой папки не трогает — ломай смело.
+
+```bash
+mkdir -p ~/lab && cd ~/lab
+mkdir -p data logs trash "folder with space"
+
+# 50 файлов случайного размера, первые 10 — «старые»
+for i in $(seq 1 50); do head -c $((RANDOM * 10)) /dev/urandom > "data/file_$i.bin"; done
+touch -d '40 days ago' data/file_{1..10}.bin
+touch "folder with space/report 2025.txt" data/notes.txt data/photo.jpg data/script.sh
+
+# Лог веб-сервера в формате nginx combined (1000 строк, по времени)
+awk -v now="$(date +%s)" 'BEGIN {
+  srand(42)
+  split("200 200 200 200 200 301 404 404 500 502", codes)
+  split("/ /login /api/users /api/orders /static/app.js /admin", urls)
+  split("Mozilla/5.0 curl/8.5 Googlebot/2.1 python-requests/2.31", uas)
+  for (i = 1000; i >= 1; i--) {
+    t = now - i * 60
+    printf "192.168.1.%d - - [%s] \"GET %s HTTP/1.1\" %s %d \"-\" \"%s\"\n",
+      int(rand() * 20) + 1, strftime("%d/%b/%Y:%H:%M:%S %z", t),
+      urls[int(rand() * 6) + 1], codes[int(rand() * 10) + 1],
+      int(rand() * 50000), uas[int(rand() * 4) + 1]
+  }
+}' > logs/access.log
+
+# Таблица сотрудников
+cat > staff.csv <<'EOF'
+name,dept,salary
+Anna,IT,120000
+Boris,Sales,80000
+Vera,IT,150000
+Gleb,HR,70000
+Dina,Sales,95000
+Egor,IT,110000
+Zhanna,HR,72000
+EOF
+
+# Конфиг с комментариями
+cat > app.conf <<'EOF'
+# Основные настройки
+port=8080
+debug=true
+
+host=0.0.0.0
+# Производительность
+workers=4
+EOF
+
+ls -la ~/lab
+```
+
+> 💡 `strftime` есть в GNU awk (`gawk`). Если скрипт ругается — установи его: `sudo apt install gawk`.
+
+### 🟢 Уровень 1: основы
+
+<details>
+<summary><b>1. Создай в ~/lab папку project с подпапками src, tests и docs одной командой</b></summary>
+
+```bash
+mkdir -p project/{src,tests,docs}
+tree project        # или: ls -R project
+```
+</details>
+
+<details>
+<summary><b>2. Найди в data все файлы больше 200 КБ</b></summary>
+
+```bash
+find data -type f -size +200k
+find data -type f -size +200k -exec ls -lh {} +     # с размерами
+```
+</details>
+
+<details>
+<summary><b>3. Перенеси файлы старше 30 дней из data в trash</b></summary>
+
+```bash
+find data -type f -mtime +30                          # сначала посмотри, что найдётся
+find data -type f -mtime +30 -exec mv -t trash/ {} +
+ls trash | wc -l                                      # должно быть 10
+```
+Правило: перед любым массовым действием запусти `find` без действия и проверь список.
+</details>
+
+<details>
+<summary><b>4. Сколько строк в логе и сколько в нём уникальных IP-адресов?</b></summary>
+
+```bash
+wc -l logs/access.log
+awk '{print $1}' logs/access.log | sort -u | wc -l
+```
+</details>
+
+<details>
+<summary><b>5. Выведи app.conf без комментариев и пустых строк</b></summary>
+
+```bash
+grep -Ev '^\s*(#|$)' app.conf
+```
+`-E` — расширенные регулярки, `-v` — инвертировать: убрать строки, которые начинаются с `#` или пустые.
+</details>
+
+<details>
+<summary><b>6. Сделай data/script.sh исполняемым только для владельца, а остальным запрети всё</b></summary>
+
+```bash
+chmod 700 data/script.sh          # или: chmod u=rwx,go= data/script.sh
+ls -l data/script.sh              # -rwx------
+```
+</details>
+
+<details>
+<summary><b>7. Выведи всех пользователей системы, у которых оболочка bash</b></summary>
+
+```bash
+awk -F: '$7 ~ /bash$/ {print $1}' /etc/passwd
+grep 'bash$' /etc/passwd | cut -d: -f1      # то же самое
+```
+</details>
+
+<details>
+<summary><b>8. Покажи размер каждой подпапки ~/lab, от меньшей к большей</b></summary>
+
+```bash
+du -sh ~/lab/*/ | sort -h
+```
+</details>
+
+<details>
+<summary><b>9. Упакуй папку logs в архив с сегодняшней датой в имени и посмотри содержимое, не распаковывая</b></summary>
+
+```bash
+tar -czf "logs-$(date +%F).tar.gz" logs
+tar -tzvf logs-*.tar.gz
+```
+</details>
+
+<details>
+<summary><b>10. Удали файл «report 2025.txt» из папки с пробелом в имени</b></summary>
+
+```bash
+rm "folder with space/report 2025.txt"
+# или с экранированием: rm folder\ with\ space/report\ 2025.txt
+# или: нажми Tab — bash сам подставит правильно экранированное имя
+```
+</details>
+
+### 🟡 Уровень 2: обработка данных
+
+<details>
+<summary><b>11. Топ-5 IP по количеству запросов</b></summary>
+
+```bash
+awk '{print $1}' logs/access.log | sort | uniq -c | sort -rn | head -5
+```
+Классический конвейер «частотный словарь»: вытащить поле → отсортировать → посчитать одинаковые → отсортировать по числу.
+</details>
+
+<details>
+<summary><b>12. Сколько было ответов каждого кода (200, 404, 500…)?</b></summary>
+
+```bash
+awk '{print $9}' logs/access.log | sort | uniq -c | sort -rn
+```
+</details>
+
+<details>
+<summary><b>13. Какие URL чаще всего отдают ошибки 5xx?</b></summary>
+
+```bash
+awk '$9 >= 500 {print $7}' logs/access.log | sort | uniq -c | sort -rn
+```
+</details>
+
+<details>
+<summary><b>14. Посчитай общий объём отданных данных в мегабайтах</b></summary>
+
+```bash
+awk '{s += $10} END {printf "%.2f MB\n", s / 1024 / 1024}' logs/access.log
+```
+</details>
+
+<details>
+<summary><b>15. Построй гистограмму запросов по часам</b></summary>
+
+```bash
+awk -F: '{print $2}' logs/access.log | sort | uniq -c
+# с «графиком» из звёздочек:
+awk -F: '{h[$2]++} END {for (k in h) {printf "%s ", k; for (i = 0; i < h[k] / 5; i++) printf "*"; print ""}}' logs/access.log | sort
+```
+Разделитель `:` режет строку так, что второе поле — это час из `[23/Sep/2026:14:05:01`.
+</details>
+
+<details>
+<summary><b>16. Средняя зарплата по отделам из staff.csv</b></summary>
+
+```bash
+awk -F, 'NR > 1 {sum[$2] += $3; n[$2]++}
+         END {for (d in sum) printf "%-6s %d\n", d, sum[d] / n[d]}' staff.csv
+```
+`NR > 1` пропускает заголовок, массивы `sum` и `n` индексируются названием отдела.
+</details>
+
+<details>
+<summary><b>17. Кто получает больше всех? Выведи имя и зарплату</b></summary>
+
+```bash
+tail -n +2 staff.csv | sort -t, -k3 -rn | head -1 | cut -d, -f1,3
+```
+</details>
+
+<details>
+<summary><b>18. Замени в app.conf debug=true на debug=false, сохранив резервную копию, и покажи разницу</b></summary>
+
+```bash
+sed -i.bak 's/^debug=true$/debug=false/' app.conf
+diff -u app.conf.bak app.conf
+```
+</details>
+
+<details>
+<summary><b>19. Переименуй все .bin в data в .dat</b></summary>
+
+```bash
+for f in data/*.bin; do mv -- "$f" "${f%.bin}.dat"; done
+ls data | head
+```
+`${f%.bin}` отрезает суффикс, `--` защищает от имён, начинающихся с дефиса.
+</details>
+
+<details>
+<summary><b>20. Посчитай файлы в ~/lab по расширениям</b></summary>
+
+```bash
+find ~/lab -type f -name '*.*' | sed 's/.*\.//' | sort | uniq -c | sort -rn
+```
+</details>
+
+### 🔴 Уровень 3: скрипты и система
+
+<details>
+<summary><b>21. Напиши скрипт check_disk.sh: предупреждение, если любой раздел заполнен больше чем на N% (по умолчанию 80), и код выхода 1</b></summary>
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+limit=${1:-80}
+status=0
+
+while read -r pcent target; do
+  use=${pcent%\%}
+  if (( use > limit )); then
+    echo "⚠️  $target заполнен на $use%"
+    status=1
+  fi
+done < <(df --output=pcent,target -x tmpfs -x devtmpfs | tail -n +2)
+
+exit "$status"
+```
+
+```bash
+chmod +x check_disk.sh
+./check_disk.sh 10; echo "код выхода: $?"
+```
+
+⚠️ Ловушка: если написать `df … | while read …`, цикл выполнится в подоболочке и переменная `status` после него будет снова `0`. Поэтому используется `< <(…)`.
+</details>
+
+<details>
+<summary><b>22. Запускай check_disk.sh каждые 15 минут через таймер systemd</b></summary>
+
+```bash
+sudo cp check_disk.sh /usr/local/bin/
+
+sudo tee /etc/systemd/system/check-disk.service <<'EOF'
+[Unit]
+Description=Check disk usage
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/check_disk.sh 85
+EOF
+
+sudo tee /etc/systemd/system/check-disk.timer <<'EOF'
+[Unit]
+Description=Check disk usage every 15 minutes
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now check-disk.timer
+systemctl list-timers check-disk.timer
+journalctl -u check-disk.service      # результаты проверок
+```
+</details>
+
+<details>
+<summary><b>23. Оставь в папке только 7 самых свежих бэкапов</b></summary>
+
+```bash
+# подготовка: 12 «бэкапов» с разными датами
+mkdir -p ~/lab/backups && cd ~/lab/backups
+for i in $(seq 1 12); do touch -d "$i days ago" "backup-$i.tar.gz"; done
+
+ls -1t backup-*.tar.gz | tail -n +8                     # сначала — что будет удалено
+ls -1t backup-*.tar.gz | tail -n +8 | xargs -r rm --
+ls -1t
+```
+`ls -1t` сортирует от новых к старым, `tail -n +8` берёт всё начиная с восьмого, `xargs -r` ничего не делает, если список пуст.
+</details>
+
+<details>
+<summary><b>24. Проверь параллельно список хостов и выведи только недоступные</b></summary>
+
+```bash
+printf '%s\n' 8.8.8.8 1.1.1.1 10.255.255.1 192.0.2.1 > hosts.txt
+xargs -P 10 -I{} sh -c 'ping -c1 -W2 {} > /dev/null 2>&1 || echo "DOWN {}"' < hosts.txt
+```
+`-P 10` — до 10 проверок одновременно, `-W2` — ждать ответ не больше 2 секунд.
+</details>
+
+<details>
+<summary><b>25. Найди процессы, которые держат удалённые файлы, и посчитай, сколько места они занимают</b></summary>
+
+```bash
+# воспроизвести проблему:
+python3 -c 'import time; f = open("/tmp/big.log", "w"); f.write("x" * 100_000_000); f.flush(); time.sleep(600)' &
+sleep 1; rm /tmp/big.log
+df -h /tmp                                             # место не освободилось
+
+sudo lsof -nP +L1                                      # вот он — (deleted)
+sudo lsof -nP +L1 | awk 'NR > 1 {s += $7} END {printf "%.1f MB\n", s / 1024 / 1024}'
+kill %1                                                # место вернётся после завершения процесса
+```
+</details>
+
+<details>
+<summary><b>26. Запусти программу с лимитом памяти 100 МБ и убедись, что её убьёт ядро</b></summary>
+
+```bash
+sudo systemd-run --scope -p MemoryMax=100M -p MemorySwapMax=0 \
+  python3 -c 'a = bytearray(500 * 1024 * 1024); print("выжил")'
+echo "код выхода: $?"                                  # 137 = убит сигналом 9 (128 + 9)
+sudo dmesg -T | grep -i "killed process" | tail -1
+```
+Так работают лимиты `MemoryMax` в systemd и `--memory` в Docker — это одни и те же cgroups.
+</details>
+
+<details>
+<summary><b>27. Создай «контейнер» без Docker: свои PID и hostname</b></summary>
+
+```bash
+sudo unshare --fork --pid --mount-proc --uts bash
+hostname lab-container
+ps aux                 # видно только bash и ps — у тебя PID 1
+hostname               # lab-container
+exit
+hostname               # на хосте имя не изменилось
+```
+</details>
+
+<details>
+<summary><b>28. Узнай, какие системные вызовы делает ls и какие файлы он открывает</b></summary>
+
+```bash
+strace -c ls > /dev/null                       # сводка по вызовам
+strace -e trace=openat ls 2>&1 | head -20      # какие файлы открываются (библиотеки, локали)
+strace -e trace=openat ls /nonexistent 2>&1 | tail -3   # как выглядит ошибка ENOENT
+```
+</details>
+
+### 🏁 Задачи для самостоятельной работы (без решений)
+
+1. Напиши скрипт, который раз в минуту дописывает в CSV время, load average, свободную память и заполнение `/`. Потом построй по нему отчёт через `awk`: максимум и среднее за день.
+2. Создай LVM на двух «виртуальных дисках» из файлов (`truncate -s 1G d1.img && sudo losetup -fP d1.img`), сделай на нём ФС, наполни данными и расширь том, не размонтируя.
+3. Подними в `docker compose` nginx и простое приложение, настрой nginx как reverse proxy и ограничь приложению память.
+4. В виртуальной машине специально сделай опечатку в `/etc/fstab`, перезагрузись и почини систему из emergency mode.
+5. Настрой вход по SSH только по ключу, включи fail2ban и проверь, что после 5 неверных паролей с другой машины IP попадает в бан.
+6. Напиши свою службу systemd для любого скрипта с `Restart=on-failure`, убей процесс через `kill -9` и убедись, что systemd его поднял (`NRestarts` в `systemctl show`).
+7. Пройди первые 15 уровней [OverTheWire: Bandit](https://overthewire.org/wargames/bandit/).
 
 ---
 
